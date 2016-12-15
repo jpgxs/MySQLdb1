@@ -6,6 +6,61 @@ maintained, there will not be a lot of new feature development.
 
 [![Build Status](https://secure.travis-ci.org/farcepest/MySQLdb1.png)](http://travis-ci.org/farcepest/MySQLdb1)
 
+
+Gevent Support
+--------------
+Gevent support is available in a similar way to psycopg2. It MUST be built against libmariadb for this to work.
+
+```python
+import MySQLdb
+from gevent import socket as gsocket
+
+
+class WaitTimeout(gsocket.timeout):
+    pass
+
+
+def callback(conn):
+    event = 0
+
+    while True:
+        state = conn.poll(event)
+
+        if state == gmysql.POLL_OK:
+            break
+        
+        if state & MySQLdb.POLL_TIMEOUT:
+            timeout = conn.wait_timeout()
+        else:
+            timeout = -1
+
+        try:
+            if state & MySQLdb.POLL_READ and state & gmysql.POLL_WRITE:
+                gsocket.wait_readwrite(conn.fileno(), timeout=timeout, 
+                                       timeout_exc=WaitTimeout)
+
+                event = MySQLdb.POLL_READ | MySQLdb.POLL_WRITE
+
+            elif state & MySQLdb.POLL_READ:
+                gsocket.wait_read(conn.fileno(), timeout=timeout, 
+                                  timeout_exc=WaitTimeout)
+
+                event = MySQLdb.POLL_READ
+
+            elif state & MySQLdb.POLL_WRITE:
+                gsocket.wait_write(conn.fileno(), timeout=timeout,
+                                   timeout_exc=WaitTimeout)
+
+                event = MySQLdb.POLL_WRITE
+
+            else:
+                raise RuntimeError("Poll returned: %s" % state)
+
+
+# Raises MySQLdb.ProgrammingError if async support was not compiled in
+MySQLdb.set_wait_callback(callback)
+```
+
 TODO
 ----
 
