@@ -71,6 +71,56 @@ typedef int Py_ssize_t;
 #define PY_SSIZE_T_MIN INT_MIN
 #endif
 
+#ifdef MARIADB_BASE_VERSION
+#define AIO_EXEC(c, res, func, ...) do {           \
+    if ( 0 == _mysql_green() ) {                   \
+        res = mysql_ ## func( __VA_ARGS__ );       \
+    } else {                                       \
+        c->async_start = 1;                        \
+        c->async_state = mysql_ ## func ## _start( \
+            & res,                                 \
+            __VA_ARGS__                            \
+        );                                         \
+    }                                              \
+} while (0)
+
+#define AIO_WAIT(c, func, args, err, ...) do {               \
+    if (1 == (c)->async_start && 0 < (c)->async_state) {    \
+        (c)->sock_fd = mysql_get_socket(& c ->connection); \
+        (c)->cont_func = _mysql_cont_ ## func ;           \
+        args a = { __VA_ARGS__ };                        \
+        c->cont_func_args = &a;                         \
+        if (0 != _mysql_green_wait(c)) {               \
+            return err;                               \
+        }                                            \
+    }                                               \
+    (c)->sock_fd = -1;                             \
+    (c)->async_start = 0;                         \
+    (c)->async_state = 0;                        \
+    (c)->cont_func = NULL;                      \
+    (c)->cont_func_args = NULL;                \
+} while (0)
+
+#define AIO_CONT_FUNC(func, ...) do {             \
+    (c) ->async_state = mysql_ ## func ## _cont( \
+            __VA_ARGS__, ev                     \
+    );                                         \
+    return (c) ->async_state;                 \
+} while (0)
+#else
+#pragma message("libmariadb not available; compiling without async IO support")
+#define AIO_EXEC(c, res, func, ...) do { \
+    res = mysql_ ## func( __VA_ARGS__ ); \
+} while (0)
+
+#define AIO_WAIT(c, func, args, err, ...) do { \
+} while (0)
+
+#define AIO_CONT_FUNC(func, ...) do { \
+    return (c) ->async_state;         \
+} while(0)
+#endif
+
 static PyObject *_mysql_MySQLError;
 static PyObject *_mysql_Warning;
 static PyObject *_mysql_Error;
@@ -83,11 +133,18 @@ static PyObject *_mysql_InternalError;
 static PyObject *_mysql_ProgrammingError;
 static PyObject *_mysql_NotSupportedError;
  
-typedef struct {
+typedef struct _mysql_ConnectionObject {
 	PyObject_HEAD
 	MYSQL connection;
 	int open;
 	PyObject *converter;
+    
+    unsigned char async_start;
+    int async_state;
+    int sock_fd;
+    int (*cont_func)(struct _mysql_ConnectionObject *conn, int ev);
+    void *cont_func_args;
+
 } _mysql_ConnectionObject;
 
 #define check_connection(c) if (!(c->open)) return _mysql_Exception(c)
@@ -118,11 +175,316 @@ static int _mysql_server_init_done = 0;
 #define HAVE_OPENSSL 1
 #endif
 
+#define DEFAULT_CONNECT_TIMEOUT 60
 /* According to https://dev.mysql.com/doc/refman/5.1/en/mysql-options.html
    The MYSQL_OPT_READ_TIMEOUT apear in the version 5.1.12 */
 #if MYSQL_VERSION_ID > 50112
 #define HAVE_MYSQL_OPT_TIMEOUTS 1
+#define DEFAULT_READ_TIMEOUT 60
+#define DEFAULT_WRITE_TIMEOUT 60
 #endif
+
+typedef struct { 
+    my_bool *ret; 
+    MYSQL *mysql; 
+} _mysql_Args_autocommit;
+
+static int
+_mysql_cont_autocommit(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_autocommit *a = (_mysql_Args_autocommit *)c->cont_func_args;
+    AIO_CONT_FUNC(autocommit, a->ret, a->mysql);
+}
+
+typedef struct {
+    MYSQL *sock;
+} _mysql_Args_close;
+
+static int
+_mysql_cont_close(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_close *a = (_mysql_Args_close *)c->cont_func_args;
+    AIO_CONT_FUNC(close, a->sock);
+}
+
+typedef struct {
+    my_bool *ret; 
+    MYSQL *mysql;
+} _mysql_Args_commit;
+
+static int
+_mysql_cont_commit(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_commit *a = (_mysql_Args_commit *)c->cont_func_args;
+    AIO_CONT_FUNC(commit, a->ret, a->mysql);
+}
+
+typedef struct {
+    MYSQL_ROW *ret; 
+    MYSQL_RES *result;
+} _mysql_Args_fetch_row;
+
+static int
+_mysql_cont_fetch_row(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_fetch_row *a = (_mysql_Args_fetch_row *)c->cont_func_args;
+    AIO_CONT_FUNC(fetch_row, a->ret, a->result);
+}
+
+typedef struct {
+    MYSQL_RES *result;
+} _mysql_Args_free_result;
+
+static int
+_mysql_cont_free_result(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_free_result *a = (_mysql_Args_free_result *)c->cont_func_args;
+    AIO_CONT_FUNC(free_result, a->result);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_kill;
+
+static int
+_mysql_cont_kill(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_kill *a = (_mysql_Args_kill *)c->cont_func_args;
+    AIO_CONT_FUNC(kill, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_ping;
+
+static int
+_mysql_cont_ping(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_ping *a = (_mysql_Args_ping *)c->cont_func_args;
+    AIO_CONT_FUNC(ping, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_query;
+
+static int
+_mysql_cont_query(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_query *a = (_mysql_Args_query *)c->cont_func_args;
+    AIO_CONT_FUNC(query, a->ret, a->mysql);
+}
+
+typedef struct {
+    MYSQL **ret; 
+    MYSQL *mysql;
+} _mysql_Args_real_connect;
+
+static int
+_mysql_cont_real_connect(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_real_connect *a = (_mysql_Args_real_connect *)c->cont_func_args;
+    AIO_CONT_FUNC(real_connect, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_real_query;
+
+static int
+_mysql_cont_real_query(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_real_query *a = (_mysql_Args_real_query *)c->cont_func_args;
+    AIO_CONT_FUNC(real_query, a->ret, a->mysql);
+}
+
+typedef struct {
+    my_bool *ret; 
+    MYSQL *mysql;
+} _mysql_Args_rollback;
+
+static int
+_mysql_cont_rollback(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_rollback *a = (_mysql_Args_rollback *)c->cont_func_args;
+    AIO_CONT_FUNC(rollback, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_select_db;
+
+static int
+_mysql_cont_select_db(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_select_db *a = (_mysql_Args_select_db *)c->cont_func_args;
+    AIO_CONT_FUNC(select_db, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_set_character_set;
+
+static int
+_mysql_cont_set_character_set(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_set_character_set *a = (_mysql_Args_set_character_set *)c->cont_func_args;
+    AIO_CONT_FUNC(set_character_set, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_set_server_option;
+
+static int
+_mysql_cont_set_server_option(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_set_server_option *a = (_mysql_Args_set_server_option *)c->cont_func_args;
+    AIO_CONT_FUNC(set_server_option, a->ret, a->mysql);
+}
+
+typedef struct {
+    int *ret; 
+    MYSQL *mysql;
+} _mysql_Args_shutdown;
+
+static int
+_mysql_cont_shutdown(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_shutdown *a = (_mysql_Args_shutdown *)c->cont_func_args;
+    AIO_CONT_FUNC(shutdown, a->ret, a->mysql);
+}
+
+typedef struct {
+    const char **ret; 
+    MYSQL *mysql;
+} _mysql_Args_stat;
+
+static int
+_mysql_cont_stat(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_stat *a = (_mysql_Args_stat *)c->cont_func_args;
+    AIO_CONT_FUNC(stat, a->ret, a->mysql);
+}
+
+typedef struct {
+    MYSQL_RES **ret; 
+    MYSQL *mysql;
+} _mysql_Args_store_result;
+
+static int
+_mysql_cont_store_result(_mysql_ConnectionObject *c, int ev)
+{
+    _mysql_Args_store_result *a = (_mysql_Args_store_result *)c->cont_func_args;
+    AIO_CONT_FUNC(store_result, a->ret, a->mysql);
+}
+
+static PyObject *
+wait_callback = NULL;
+
+static char _mysql_set_wait_callback_doc_[] =
+"Sets the wait callback function for async IO";
+
+static PyObject *
+_mysql_set_wait_callback(PyObject *self, PyObject *callback)
+{
+    (void)self; /* unused-parameter */
+
+#ifndef MARIADB_BASE_VERSION
+    PyErr_SetString(
+        _mysql_ProgrammingError, 
+        "MariaDB asyncronous IO support not available. Requires libmariadb.");
+#endif
+
+    Py_XDECREF(wait_callback);
+
+    if (Py_None != callback) {
+        wait_callback = callback;
+        Py_INCREF(callback);
+    } else {
+        wait_callback = NULL;
+    }
+
+    Py_RETURN_NONE;
+}
+
+static char _mysql_get_wait_callback_doc_[] =
+"Gets the wait callback function used for async IO";
+
+static PyObject *
+_mysql_get_wait_callback(PyObject *self)
+{
+    (void)self; /* unused-parameter */
+
+    PyObject *ret;
+
+    ret = wait_callback;
+    if (!ret) {
+        ret = Py_None;
+    }
+
+    Py_INCREF(ret);
+    return ret;
+}
+
+unsigned char
+_mysql_green(void)
+{
+    return (NULL != wait_callback);
+}
+
+static PyObject *
+_get_wait_callback(void)
+{
+    PyObject *callback;
+
+    callback = wait_callback;
+    if (!callback) {
+        goto ERROR;
+    }
+
+    Py_INCREF(callback);
+    return callback;
+
+ERROR:
+    PyErr_SetObject(
+        PyExc_RuntimeError,
+        PyString_FromString("Wait callback not available.")
+    );
+
+    return NULL;
+}
+
+static int
+_mysql_green_wait(_mysql_ConnectionObject *c)
+{
+    PyObject *callback,
+             *ret;
+
+    callback = _get_wait_callback();
+    if (!callback) {
+        return -1;
+    }
+
+    ret = PyObject_CallFunctionObjArgs(callback, c, NULL);
+    Py_DECREF(callback);
+
+    if (NULL != ret) {
+        /* Success */
+        Py_DECREF(ret);
+        return 0;
+    }
+
+    /* Error in callback */
+    return -1;
+}
 
 PyObject *
 _mysql_Exception(_mysql_ConnectionObject *c)
@@ -423,13 +785,16 @@ _mysql_ResultObject_Initialize(
 	self->conn = (PyObject *) conn;
 	Py_INCREF(conn);
 	self->use = use;
-	Py_BEGIN_ALLOW_THREADS ;
+	
 	if (use)
 		result = mysql_use_result(&(conn->connection));
-	else
-		result = mysql_store_result(&(conn->connection));
+	else {
+        AIO_EXEC(conn, result, store_result, &(conn->connection));
+        AIO_WAIT(conn, store_result, _mysql_Args_store_result, -1, &result, &(conn->connection));
+		// result = mysql_store_result(&(conn->connection));
+    }
 	self->result = result;
-	Py_END_ALLOW_THREADS ;
+	
 	if (!result) {
 		if (mysql_field_count(&(conn->connection)) > 0) {
 		    _mysql_Exception(conn);
@@ -571,10 +936,10 @@ _mysql_ConnectionObject_Initialize(
                                   "write_timeout",
 #endif
 				  NULL } ;
-	int connect_timeout = 0;
+	int connect_timeout = DEFAULT_CONNECT_TIMEOUT;
 #ifdef HAVE_MYSQL_OPT_TIMEOUTS
-        int read_timeout = 0;
-        int write_timeout = 0;
+        int read_timeout = DEFAULT_READ_TIMEOUT;
+        int write_timeout = DEFAULT_WRITE_TIMEOUT;
 #endif
 	int compress = -1, named_pipe = -1, local_infile = -1;
 	char *init_command=NULL,
@@ -632,8 +997,11 @@ _mysql_ConnectionObject_Initialize(
 #endif
 	}
 
-	Py_BEGIN_ALLOW_THREADS ;
 	conn = mysql_init(&(self->connection));
+
+    /* Allow non blocking */
+    mysql_options(&(self->connection), MYSQL_OPT_NONBLOCK, 0);
+
 	if (connect_timeout) {
 		unsigned int timeout = connect_timeout;
 		mysql_options(&(self->connection), MYSQL_OPT_CONNECT_TIMEOUT, 
@@ -673,10 +1041,28 @@ _mysql_ConnectionObject_Initialize(
 			      key, cert, ca, capath, cipher);
 #endif
 
-	conn = mysql_real_connect(&(self->connection), host, user, passwd, db,
-				  port, unix_socket, client_flag);
+    AIO_EXEC(
+        self, conn, real_connect,
+        &(self->connection),
+        host, 
+        user, 
+        passwd, 
+        db, 
+        port, 
+        NULL, 
+        client_flag
+    );
 
-	Py_END_ALLOW_THREADS ;
+    AIO_WAIT(
+        self, 
+        real_connect, 
+        _mysql_Args_real_connect, 
+        -1, 
+        &conn, 
+        &(self->connection)
+    );
+
+    // conn = mysql_real_connect(&(self->connection), host, user, passwd, db, port, unix_socket, client_flag);
 
 	if (!conn) {
 		_mysql_Exception(self);
@@ -806,9 +1192,21 @@ _mysql_ConnectionObject_close(
 		if (!PyArg_ParseTuple(args, "")) return NULL;
 	}
 	if (self->open) {
-		Py_BEGIN_ALLOW_THREADS
-		mysql_close(&(self->connection));
-		Py_END_ALLOW_THREADS
+
+        if (!_mysql_green()) {
+            Py_BEGIN_ALLOW_THREADS
+            mysql_close(&(self->connection));
+            Py_END_ALLOW_THREADS
+        } else {
+            self->async_start = 1;
+            self->async_state = mysql_close_start(&(self->connection));
+
+            AIO_WAIT(
+                self, close, _mysql_Args_close,
+                NULL, &(self->connection)
+            );
+        }
+
 		self->open = 0;
 	} else {
 		PyErr_SetString(_mysql_ProgrammingError,
@@ -842,9 +1240,7 @@ To use this function, you must compile the client library to\n\
 support debugging.\n\
 ";
 static PyObject *
-_mysql_debug(
-	PyObject *self,
-	PyObject *args)
+_mysql_debug(PyObject *self, PyObject *args)
 {
 	char *debug;
 	if (!PyArg_ParseTuple(args, "s", &debug)) return NULL;
@@ -883,19 +1279,40 @@ _mysql_ConnectionObject_autocommit(
 	_mysql_ConnectionObject *self,
 	PyObject *args)
 {
-	int flag, err;
+	int flag; 
+    my_bool err;
+
 	if (!PyArg_ParseTuple(args, "i", &flag)) return NULL;
-	Py_BEGIN_ALLOW_THREADS
 #if MYSQL_VERSION_ID >= 40100
-	err = mysql_autocommit(&(self->connection), flag);
+
+    AIO_EXEC(
+        self, err, autocommit,
+        &(self->connection), flag
+    );
+
+    AIO_WAIT(
+        self, autocommit, _mysql_Args_autocommit,
+        NULL, &err, &(self->connection)
+    );
+	// err = mysql_autocommit(&(self->connection), flag);
 #else
 	{
 		char query[256];
 		snprintf(query, 256, "SET AUTOCOMMIT=%d", flag);
-		err = mysql_query(&(self->connection), query);
+
+        AIO_EXEC(
+            self, err, query,
+            &(self->connection), query
+        );
+
+        AIO_WAIT(
+            self, query, _mysql_Args_query,
+            NULL, &err, &(self->connection)
+        );
+
+		// err = mysql_query(&(self->connection), query);
 	}
 #endif
-	Py_END_ALLOW_THREADS
 	if (err) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -923,15 +1340,30 @@ _mysql_ConnectionObject_commit(
 	_mysql_ConnectionObject *self,
 	PyObject *args)
 {
-	int err;
+	my_bool err;
 	if (!PyArg_ParseTuple(args, "")) return NULL;
-	Py_BEGIN_ALLOW_THREADS
+
 #if MYSQL_VERSION_ID >= 40100
-	err = mysql_commit(&(self->connection));
+	// err = mysql_commit(&(self->connection));
+    AIO_EXEC(
+        self, err, commit,
+        &(self->connection)
+    );
+    AIO_WAIT(
+        self, commit, _mysql_Args_commit,
+        NULL, &err, &(self->connection)
+    );
 #else
-	err = mysql_query(&(self->connection), "COMMIT");
+	// err = mysql_query(&(self->connection), "COMMIT");
+    AIO_EXEC(
+        self, err, query
+        &(self->connection), "COMMIT"
+    );
+    AIO_WAIT(
+        self, query, _mysql_Args_query,
+        NULL, &err, &(self->connection)
+    );
 #endif
-	Py_END_ALLOW_THREADS
 	if (err) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -945,15 +1377,23 @@ _mysql_ConnectionObject_rollback(
 	_mysql_ConnectionObject *self,
 	PyObject *args)
 {
-	int err;
+	my_bool err;
 	if (!PyArg_ParseTuple(args, "")) return NULL;
-	Py_BEGIN_ALLOW_THREADS
 #if MYSQL_VERSION_ID >= 40100
-	err = mysql_rollback(&(self->connection));
+	// err = mysql_rollback(&(self->connection));
+    AIO_EXEC(self, err, rollback, &(self->connection));
+    AIO_WAIT(self, rollback, _mysql_Args_rollback, NULL, &err, &(self->connection));
 #else
-	err = mysql_query(&(self->connection), "ROLLBACK");
+    AIO_EXEC(
+        self, err, query
+        &(self->connection), "ROLLBACK"
+    );
+    AIO_WAIT(
+        self, query, _mysql_Args_query,
+        NULL, &err, &(self->connection)
+    );
+	// err = mysql_query(&(self->connection), "ROLLBACK");
 #endif
-	Py_END_ALLOW_THREADS
 	if (err) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -1006,9 +1446,9 @@ _mysql_ConnectionObject_set_server_option(
 	int err, flags=0;
 	if (!PyArg_ParseTuple(args, "i", &flags))
 		return NULL;
-	Py_BEGIN_ALLOW_THREADS
-	err = mysql_set_server_option(&(self->connection), flags);
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, err, set_server_option, &(self->connection), flags);
+    AIO_WAIT(self, set_server_option, _mysql_Args_set_server_option, NULL, &err, &(self->connection));
+	// err = mysql_set_server_option(&(self->connection), flags);
 	if (err) return _mysql_Exception(self);
 	return PyInt_FromLong(err);
 }		
@@ -1528,15 +1968,36 @@ _mysql__fetch_row(
 {
 	unsigned int i;
 	MYSQL_ROW row;
+    _mysql_ConnectionObject *conn = (_mysql_ConnectionObject *)(self->conn);
 
 	for (i = skiprows; i<(skiprows+maxrows); i++) {
 		PyObject *v;
-		if (!self->use)
-			row = mysql_fetch_row(self->result);
+		if (!self->use) {
+            AIO_EXEC(
+                conn, row, fetch_row,
+                self->result
+            );
+
+            AIO_WAIT(
+                conn, fetch_row, _mysql_Args_fetch_row,
+                -1, &row, self->result
+            );
+			// row = mysql_fetch_row(self->result);
+        }
+
 		else {
-			Py_BEGIN_ALLOW_THREADS;
-			row = mysql_fetch_row(self->result);
-			Py_END_ALLOW_THREADS;
+
+            AIO_EXEC(
+                conn, row, fetch_row,
+                self->result
+            );
+
+            AIO_WAIT(
+                conn, fetch_row, _mysql_Args_fetch_row,
+                -1, &row, self->result
+            );
+			// row = mysql_fetch_row(self->result);
+			
 		}
 		if (!row && mysql_errno(&(((_mysql_ConnectionObject *)(self->conn))->connection))) {
 			_mysql_Exception((_mysql_ConnectionObject *)self->conn);
@@ -1706,9 +2167,9 @@ _mysql_ConnectionObject_set_character_set(
 	int err;
 	if (!PyArg_ParseTuple(args, "s", &s)) return NULL;
 	check_connection(self);
-	Py_BEGIN_ALLOW_THREADS
-	err = mysql_set_character_set(&(self->connection), s);
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, err, set_character_set, &(self->connection), s);
+    AIO_WAIT(self, set_character_set, _mysql_Args_set_character_set, NULL, &err, &(self->connection));
+	// err = mysql_set_character_set(&(self->connection), s);
 	if (err) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -1918,9 +2379,9 @@ _mysql_ConnectionObject_kill(
 	int r;
 	if (!PyArg_ParseTuple(args, "k:kill", &pid)) return NULL;
 	check_connection(self);
-	Py_BEGIN_ALLOW_THREADS
-	r = mysql_kill(&(self->connection), pid);
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, r, kill, &(self->connection), pid);
+    AIO_WAIT(self, kill, _mysql_Args_kill, NULL, &r, &(self->connection));
+	// r = mysql_kill(&(self->connection), pid);
 	if (r) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -2003,9 +2464,9 @@ _mysql_ConnectionObject_ping(
 	if (!PyArg_ParseTuple(args, "|I", &reconnect)) return NULL;
 	check_connection(self);
 	if ( reconnect != -1 ) self->connection.reconnect = reconnect;
-	Py_BEGIN_ALLOW_THREADS
-	r = mysql_ping(&(self->connection));
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, r, ping, &(self->connection));
+    AIO_WAIT(self, ping, _mysql_Args_ping, NULL, &r, &(self->connection));
+	// r = mysql_ping(&(self->connection));
 	if (r) 	return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -2026,9 +2487,9 @@ _mysql_ConnectionObject_query(
 	int len, r;
 	if (!PyArg_ParseTuple(args, "s#:query", &query, &len)) return NULL;
 	check_connection(self);
-	Py_BEGIN_ALLOW_THREADS
-	r = mysql_real_query(&(self->connection), query, len);
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, r, real_query, &(self->connection), query, len);
+    AIO_WAIT(self, real_query, _mysql_Args_real_query, NULL, &r, &(self->connection));
+	// r = mysql_real_query(&(self->connection), query, len);
 	if (r) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -2056,9 +2517,9 @@ _mysql_ConnectionObject_select_db(
 	int r;
 	if (!PyArg_ParseTuple(args, "s:select_db", &db)) return NULL;
 	check_connection(self);
-	Py_BEGIN_ALLOW_THREADS
-	r = mysql_select_db(&(self->connection), db);
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, r, select_db, &(self->connection), db);
+    AIO_WAIT(self, select_db, _mysql_Args_select_db, NULL, &r, &(self->connection));
+	// r = mysql_select_db(&(self->connection), db);
 	if (r) 	return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -2077,13 +2538,18 @@ _mysql_ConnectionObject_shutdown(
 	int r;
 	if (!PyArg_ParseTuple(args, "")) return NULL;
 	check_connection(self);
-	Py_BEGIN_ALLOW_THREADS
-	r = mysql_shutdown(&(self->connection)
+    AIO_EXEC(self, r, shutdown, &(self->connection)
 #if MYSQL_VERSION_ID >= 40103
 		, SHUTDOWN_DEFAULT
 #endif
-		);
-	Py_END_ALLOW_THREADS
+    );
+    AIO_WAIT(self, shutdown, _mysql_Args_shutdown, NULL, &r, &(self->connection));
+
+// 	r = mysql_shutdown(&(self->connection)
+// #if MYSQL_VERSION_ID >= 40103
+// 		, SHUTDOWN_DEFAULT
+// #endif
+// 		);
 	if (r) return _mysql_Exception(self);
 	Py_INCREF(Py_None);
 	return Py_None;
@@ -2104,9 +2570,9 @@ _mysql_ConnectionObject_stat(
 	const char *s;
 	if (!PyArg_ParseTuple(args, "")) return NULL;
 	check_connection(self);
-	Py_BEGIN_ALLOW_THREADS
-	s = mysql_stat(&(self->connection));
-	Py_END_ALLOW_THREADS
+    AIO_EXEC(self, s, stat, &(self->connection));
+    AIO_WAIT(self, stat, _mysql_Args_stat, NULL, &s, &(self->connection));
+	// s = mysql_stat(&(self->connection));
 	if (!s) return _mysql_Exception(self);
 #ifdef IS_PY3K
 	return PyUnicode_FromString(s);
@@ -2175,6 +2641,59 @@ _mysql_ConnectionObject_thread_id(
 	pid = mysql_thread_id(&(self->connection));
 	Py_END_ALLOW_THREADS
 	return PyInt_FromLong((long)pid);
+}
+
+static char _mysql_ConnectionObject_fileno__doc__[] =
+"Returns the current FD for the socket during async operation.";
+
+static PyObject *
+_mysql_ConnectionObject_fileno(_mysql_ConnectionObject *self)
+{
+    if (0 > self->sock_fd) {
+        Py_RETURN_NONE;
+    }
+
+    return PyInt_FromLong(self->sock_fd);
+}
+
+static char _mysql_ConnectionObject_wait_timeout__doc__[] =
+"Returns the current timeout value for the connection";
+
+static PyObject *
+_mysql_ConnectionObject_wait_timeout(_mysql_ConnectionObject *self)
+{
+    unsigned int timeout;
+    timeout = mysql_get_timeout_value(&(self->connection));
+    return PyLong_FromUnsignedLong(timeout);
+}
+
+static char _mysql_ConnectionObject_poll__doc__[] =
+"Polls the socket for the next event";
+
+static PyObject *
+_mysql_ConnectionObject_poll(_mysql_ConnectionObject *self, PyObject *args, PyObject *kwds)
+{
+    int ev = 0,
+        state;
+
+    if (!self->async_state) {
+        PyErr_SetString(_mysql_ProgrammingError, "Cannot poll outside of async operation.");
+        return NULL;
+    }
+
+    static char *kwlist[] = {"event", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|i", kwlist, &ev)) {
+        return NULL;
+    }
+
+    if (self->async_start) {
+        state = self->async_state;
+        self->async_start = 0;
+    } else {
+        state = self->cont_func(self, ev);
+    }
+
+    return PyInt_FromLong(state);
 }
 
 static char _mysql_ConnectionObject_use_result__doc__[] =
@@ -2307,7 +2826,18 @@ _mysql_ResultObject_dealloc(
 	_mysql_ResultObject *self)
 {
 	PyObject_GC_UnTrack((PyObject *)self);
-	mysql_free_result(self->result);
+	// mysql_free_result(self->result);
+
+    if (!_mysql_green()) {
+        mysql_free_result(self->result);
+    } else {
+        _mysql_ConnectionObject *conn = (_mysql_ConnectionObject *)(self->conn);
+        conn->async_start = 1;
+        conn->async_state = mysql_free_result_start(self->result);
+
+        AIO_WAIT(conn, free_result, _mysql_Args_free_result,);
+    }
+
 	_mysql_ResultObject_clear(self);
 	MyFree(self);
 }
@@ -2357,6 +2887,24 @@ static PyMethodDef _mysql_ConnectionObject_methods[] = {
 		METH_VARARGS,
 		_mysql_ConnectionObject_rollback__doc__
 	},
+    {
+        "fileno",
+        (PyCFunction)_mysql_ConnectionObject_fileno,
+        METH_NOARGS,
+        _mysql_ConnectionObject_fileno__doc__
+    },
+    {
+        "wait_timeout",
+        (PyCFunction)_mysql_ConnectionObject_wait_timeout,
+        METH_NOARGS,
+        _mysql_ConnectionObject_wait_timeout__doc__
+    },
+    {
+        "poll",
+        (PyCFunction)_mysql_ConnectionObject_poll,
+        METH_VARARGS|METH_KEYWORDS,
+        _mysql_ConnectionObject_poll__doc__
+    },
 	{
 		"next_result",
 		(PyCFunction)_mysql_ConnectionObject_next_result,
@@ -3004,6 +3552,18 @@ _mysql_methods[] = {
 		METH_VARARGS,
 		_mysql_server_end__doc__
 	},
+    {
+        "get_wait_callback",
+        (PyCFunction)_mysql_get_wait_callback,
+        METH_NOARGS,
+        _mysql_get_wait_callback_doc_
+    },
+    {
+        "set_wait_callback",
+        (PyCFunction)_mysql_set_wait_callback,
+        METH_O,
+        _mysql_set_wait_callback_doc_
+    },
 	{NULL, NULL} /* sentinel */
 };
 
@@ -3153,6 +3713,19 @@ init_mysql(void)
 	if (!(_mysql_NULL = PyString_FromString("NULL")))
 		goto error;
 #endif
+
+    PyObject *ev_ok      = PyInt_FromLong(0),
+             *ev_read    = PyInt_FromLong(MYSQL_WAIT_READ),
+             *ev_write   = PyInt_FromLong(MYSQL_WAIT_WRITE),
+             *ev_timeout = PyInt_FromLong(MYSQL_WAIT_TIMEOUT),
+             *ev_except  = PyInt_FromLong(MYSQL_WAIT_EXCEPT);
+
+    PyModule_AddObject(module, "POLL_OK", ev_ok);
+    PyModule_AddObject(module, "POLL_READ", ev_read);
+    PyModule_AddObject(module, "POLL_WRITE", ev_write);
+    PyModule_AddObject(module, "POLL_TIMEOUT", ev_timeout);
+    PyModule_AddObject(module, "POLL_EXCEPT", ev_except);
+
 	if (PyDict_SetItemString(dict, "NULL", _mysql_NULL)) goto error;
   error:
 	if (PyErr_Occurred()) {
@@ -3164,5 +3737,3 @@ init_mysql(void)
     return module;
 #endif
 }
-
-
