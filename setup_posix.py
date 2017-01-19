@@ -50,6 +50,8 @@ def get_config():
         client = "mysqlclient"
 
     library_dirs = [ dequote(i[2:]) for i in libs if i.startswith(compiler_flag("L")) ]
+    library_dirs.insert(0, './mariadb-src/mariadb-connector-c-2.3.2-src/libmariadb')
+
     libraries = [ dequote(i[2:]) for i in libs if i.startswith(compiler_flag("l")) ]
 
     removable_compile_args = [ compiler_flag(f) for f in "ILl" ]
@@ -65,6 +67,8 @@ def get_config():
     include_dirs = [ dequote(i[2:])
                      for i in mysql_config('include')
                      if i.startswith(compiler_flag('I')) ]
+
+    include_dirs.insert(0, './mariadb-src/mariadb-connector-c-2.3.2-src/include')
     if not include_dirs: # fix for MySQL-3.23
         include_dirs = [ dequote(i[2:])
                          for i in mysql_config('cflags')
