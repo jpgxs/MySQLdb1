@@ -71,7 +71,6 @@ typedef int Py_ssize_t;
 #define PY_SSIZE_T_MIN INT_MIN
 #endif
 
-#ifdef MARIADB_BASE_VERSION
 #define AIO_EXEC(c, res, func, ...) do {           \
     if ( 0 == _mysql_green() ) {                   \
         res = mysql_ ## func( __VA_ARGS__ );       \
@@ -107,19 +106,6 @@ typedef int Py_ssize_t;
     );                                         \
     return (c) ->async_state;                 \
 } while (0)
-#else
-#pragma message("libmariadb not available; compiling without async IO support")
-#define AIO_EXEC(c, res, func, ...) do { \
-    res = mysql_ ## func( __VA_ARGS__ ); \
-} while (0)
-
-#define AIO_WAIT(c, func, args, err, ...) do { \
-} while (0)
-
-#define AIO_CONT_FUNC(func, ...) do { \
-    return (c) ->async_state;         \
-} while(0)
-#endif
 
 static PyObject *_mysql_MySQLError;
 static PyObject *_mysql_Warning;
@@ -396,12 +382,6 @@ static PyObject *
 _mysql_set_wait_callback(PyObject *self, PyObject *callback)
 {
     (void)self; /* unused-parameter */
-
-#ifndef MARIADB_BASE_VERSION
-    PyErr_SetString(
-        _mysql_ProgrammingError, 
-        "MariaDB asyncronous IO support not available. Requires libmariadb.");
-#endif
 
     Py_XDECREF(wait_callback);
 
