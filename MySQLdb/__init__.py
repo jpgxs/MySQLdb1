@@ -30,7 +30,13 @@ from _mysql import *
 from MySQLdb.constants import FIELD_TYPE
 from MySQLdb.times import Date, Time, Timestamp, \
     DateFromTicks, TimeFromTicks, TimestampFromTicks
-from MySQLdb.callbacks import patch_for_gevent
+
+try:
+    from MySQLdb.callbacks import patch_for_gevent
+except ImportError:
+    _HAS_GEVENT = False
+else:
+    _HAS_GEVENT = True
 
 try:
     frozenset
@@ -92,5 +98,7 @@ __all__ = [ 'BINARY', 'Binary', 'Connect', 'Connection', 'DATE',
     'TIMESTAMP', 'Warning', 'apilevel', 'connect', 'connections',
     'constants', 'converters', 'cursors', 'debug', 'escape', 'escape_dict',
     'escape_sequence', 'escape_string', 'get_client_info',
-    'paramstyle', 'string_literal', 'threadsafety', 'version_info',
-    'patch_for_gevent']
+    'paramstyle', 'string_literal', 'threadsafety', 'version_info']
+
+if _HAS_GEVENT:
+    __all__.append('patch_for_gevent')

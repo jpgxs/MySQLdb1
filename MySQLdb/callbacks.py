@@ -1,69 +1,83 @@
 #!/usr/bin/env python
 
-from MySQLdb import (
-    set_wait_callback,
-    POLL_OK,
-    POLL_READ,
-    POLL_WRITE,
-    POLL_EXCEPT,
-    POLL_TIMEOUT
-)
+from gevent.event import Event
+from gevent.hub import get_hub
 
-try:
-    from gevent import select
-    from gevent.select import (
-        POLLIN,
-        POLLOUT,
-        POLLPRI
+from MySQLdb import set_wait_callback
+from MySQLdb import (POLL_OK,
+                     POLL_READ,
+                     POLL_WRITE,
+                     POLL_EXCEPT,
+                     POLL_TIMEOUT)
+
+_GEV_READ = 1
+_GEV_WRIT = 2
+
+
+class PollResult(object):
+
+    __slots__ = (
+        'event',
+        'events',
     )
-except ImportError:
-    import select
-    from select import (
-        POLLIN,
-        POLLOUT,
-        POLLPRI
-    )
+
+    def __init__(self):
+        self.events = set()
+        self.event = Event()
+
+    def add_event(self, events, fd):
+        if events < 0:
+            flags = POLL_EXCEPT
+        else:
+            flags = (
+                (POLL_READ if events & _GEV_READ else 0) |
+                (POLL_WRITE if events & _GEV_WRIT else 0)
+            )
+        self.events.add(flags)
+        self.event.set()
 
 
 def wait_for_mysql(conn, status):
     """Waits for the MySQL file descriptor to be ready for the next operation"""
 
-    # Creates a new poll object; doesn't actually poll anything...
-    pfd = select.poll()
+    # Get the gevent event loop
+    ev_loop = get_hub().loop
 
     # Bitmask of events to listen for
     events = (
-        (POLLIN if status & POLL_READ else 0) |
-        (POLLOUT if status & POLL_WRITE else 0) |
-        (POLLPRI if status & POLL_EXCEPT else 0)
+        (_GEV_READ if status & POLL_READ else 0) |
+        (_GEV_WRIT if status & POLL_WRITE else 0)
     )
 
-    # conn implements fileno() so can be passed as-is
-    pfd.register(conn, events)
+    # Get the connection's file descriptor
+    fd = conn.fileno()
+
+    # Register it with the event loop to be watched
+    ev_watcher = ev_loop.io(fd, events)
+    ev_watcher.priority = ev_loop.MAXPRI
 
     if status & POLL_TIMEOUT:
-        # Must convert to milliseconds or you'll get some weird behaviour
-        timeout = 1000 * conn.wait_timeout()
+        timeout = conn.wait_timeout()
     else:
         # No timeout
         timeout = -1
 
-    # Poll the fd for the specified events. On timeout, will be []
-    revents = pfd.poll(timeout)
+    ev_result = PollResult()
+    try:
+        # Start the watcher
+        ev_watcher.start(ev_result.add_event, fd, pass_events=True)
+        ev_result.event.wait(timeout=timeout)
+
+        # Get the list of events. Should contain one item or nothing on timeout
+        revents = list(ev_result.events)
+    finally:
+        ev_watcher.stop()
 
     try:
-        # Should look like: [(fd, events)]
-        revents = revents[0][1]
+        status = revents[0]
     except IndexError:
         # Operation timed out and [] was returned
         status = POLL_TIMEOUT
-    else:
-        # Create a mask of what actually happened
-        status = (
-            (POLL_READ if revents & POLLIN else 0) |
-            (POLL_WRITE if revents & POLLOUT else 0) |
-            (POLL_EXCEPT if revents & POLLPRI else 0)
-        )
 
     return status
 
